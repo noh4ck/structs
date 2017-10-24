@@ -14,12 +14,16 @@ var (
 	DefaultTagName = "structs" // struct's field default tag name
 )
 
+type Filter map[string]Filter
+
 // Struct encapsulates a struct type to provide several high level functions
 // around the struct.
 type Struct struct {
-	raw     interface{}
-	value   reflect.Value
-	TagName string
+	raw       interface{}
+	value     reflect.Value
+	TagName   string
+	filter    Filter
+	filtering bool
 }
 
 // New returns a new *Struct with the struct s. It panics if the s's kind is
@@ -30,6 +34,11 @@ func New(s interface{}) *Struct {
 		value:   strctVal(s),
 		TagName: DefaultTagName,
 	}
+}
+
+func (s *Struct) Filter(f Filter) {
+	s.filter = f
+	s.filtering = true
 }
 
 // Map converts the given struct to a map[string]interface{}, where the keys
@@ -95,6 +104,7 @@ func (s *Struct) FillMap(out map[string]interface{}) {
 
 	for _, field := range fields {
 		name := field.Name
+
 		val := s.value.FieldByName(name)
 		isSubStruct := false
 		var finalVal interface{}
@@ -102,6 +112,15 @@ func (s *Struct) FillMap(out map[string]interface{}) {
 		tagName, tagOpts := parseTag(field.Tag.Get(s.TagName))
 		if tagName != "" {
 			name = tagName
+		}
+
+		var ff Filter
+		if s.filtering == true {
+			var ok bool
+			ff, ok = s.filter[name]
+			if ok == false && s.filtering == true {
+				continue
+			}
 		}
 
 		// if the value is a zero value and the field is marked as omitempty do
@@ -116,7 +135,7 @@ func (s *Struct) FillMap(out map[string]interface{}) {
 		}
 
 		if !tagOpts.Has("omitnested") {
-			finalVal = s.nested(val)
+			finalVal = s.nested(val, ff)
 
 			v := reflect.ValueOf(val.Interface())
 			if v.Kind() == reflect.Ptr {
@@ -508,7 +527,7 @@ func Name(s interface{}) string {
 
 // nested retrieves recursively all types for the given value and returns the
 // nested value.
-func (s *Struct) nested(val reflect.Value) interface{} {
+func (s *Struct) nested(val reflect.Value, ff Filter) interface{} {
 	var finalVal interface{}
 
 	v := reflect.ValueOf(val.Interface())
@@ -520,6 +539,9 @@ func (s *Struct) nested(val reflect.Value) interface{} {
 	case reflect.Struct:
 		n := New(val.Interface())
 		n.TagName = s.TagName
+		if s.filtering == true {
+			n.Filter(ff)
+		}
 		m := n.Map()
 
 		// do not add the converted value if there are no exported fields, ie:
@@ -548,7 +570,7 @@ func (s *Struct) nested(val reflect.Value) interface{} {
 				mapElem.Elem().Kind() == reflect.Struct) {
 			m := make(map[string]interface{}, val.Len())
 			for _, k := range val.MapKeys() {
-				m[k.String()] = s.nested(val.MapIndex(k))
+				m[k.String()] = s.nested(val.MapIndex(k), ff)
 			}
 			finalVal = m
 			break
@@ -575,7 +597,7 @@ func (s *Struct) nested(val reflect.Value) interface{} {
 
 		slices := make([]interface{}, val.Len(), val.Len())
 		for x := 0; x < val.Len(); x++ {
-			slices[x] = s.nested(val.Index(x))
+			slices[x] = s.nested(val.Index(x), ff)
 		}
 		finalVal = slices
 	default:
